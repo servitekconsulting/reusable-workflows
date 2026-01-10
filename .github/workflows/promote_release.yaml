@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       image-name:
-        description: "Nombre base de imagen, ej: app-prueba-java"
+        description: "Nombre base de imagen, ej: myapp-java"
         required: true
         type: string
       publish_latest:
@@ -26,66 +26,164 @@ on:
         required: false
         type: boolean
         default: true
+
+      # Controles de seguridad
+      prod_branch:
+        description: "Rama desde la que se permite promover"
+        required: false
+        type: string
+        default: "master"
+      protected_env_name:
+        description: "Ambiente protegido (para aprobación). Usualmente 'prod'"
+        required: false
+        type: string
+        default: "prod"
+      require_org_member:
+        description: "Exigir que el actor sea miembro de la organización"
+        required: false
+        type: boolean
+        default: true
+      allowed_actors:
+        description: "Usuarios permitidos (coma-separado). Ej: 'alice,bob'"
+        required: false
+        type: string
+        default: ""
+      allowed_teams:
+        description: "Equipos permitidos (coma-separado). Formato 'team-slug' o 'org/team-slug'"
+        required: false
+        type: string
+        default: ""
+
     secrets:
+      # Requeridos solo si do_acr=true
       REGISTRY_USERNAME:
-        required: false   # sólo si do_acr=true
+        required: false
       REGISTRY_PASSWORD:
         required: false
-      # No hace falta KUBE_CONFIG aquí; esto sólo promociona imágenes y tags
+
 permissions:
-  contents: write   # crear tag GA y release GA
-  packages: write   # empujar a GHCR
+  contents: write   # crear/editar releases y tags
+  packages: write   # re-etiquetar imágenes en GHCR
 
 jobs:
   promote:
+    # Ambiente protegido -> requiere aprobación si configuras Required reviewers en 'prod'
+    environment:
+      name: ${{ inputs.protected_env_name }}
+
     runs-on: ubuntu-latest
     outputs:
       ga_version: ${{ steps.compute.outputs.ga_version }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute GA from RC
+      # 1) Validación RC y cálculo de GA
+      - name: Validate RC and compute GA
         id: compute
         shell: bash
         run: |
           RC="${{ inputs.rc_version }}"
           if ! echo "$RC" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'; then
-            echo "::error::'$RC' no es un RC válido (vX.Y.Z-rc.N)"
+            echo "::error::'$RC' no es un RC válido (esperado vX.Y.Z-rc.N)"
             exit 1
           fi
           GA="$(echo "$RC" | sed -E 's/-rc\.[0-9]+$//')"
-          echo "GA=$GA"
-          echo "ga_version=$GA" >> $GITHUB_OUTPUT
-          echo "RC_VERSION=$RC" >> $GITHUB_ENV
-          echo "GA_VERSION=$GA" >> $GITHUB_ENV
 
-      - name: Verify GA tag/release don't exist
+          echo "ga_version=$GA" >> $GITHUB_OUTPUT
+          echo "RC_VERSION=$RC"  >> $GITHUB_ENV
+          echo "GA_VERSION=$GA"  >> $GITHUB_ENV
+
+      # 2) Políticas: rama / organización / usuarios / equipos
+      - name: Enforce branch & actor policy
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          git fetch --tags
+
+          # Rama
+          REF_NAME="${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}"
+          PROD_BRANCH="${{ inputs.prod_branch }}"
+          if [ "$REF_NAME" != "$PROD_BRANCH" ]; then
+            echo "::error::Este job solo puede ejecutarse desde la rama '$PROD_BRANCH'. (ref actual: '$REF_NAME')"
+            exit 1
+          fi
+
+          # Miembro de la organización (si aplica)
+          if [ "${{ inputs.require_org_member }}" = "true" ]; then
+            ORG="${{ github.repository_owner }}"
+            if ! gh api -X GET "orgs/$ORG/members/${{ github.actor }}" >/dev/null 2>&1; then
+              echo "::error::El actor '${{ github.actor }}' no es miembro de la organización '$ORG'."
+              exit 1
+            fi
+          fi
+
+          # Lista blanca de usuarios (si provista)
+          ALLOWED="${{ inputs.allowed_actors }}"
+          if [ -n "$ALLOWED" ]; then
+            IFS=',' read -ra LIST <<< "$ALLOWED"
+            OK="false"
+            for u in "${LIST[@]}"; do
+              u_trim="$(echo "$u" | xargs)"
+              if [ "$u_trim" = "${{ github.actor }}" ]; then OK="true"; break; fi
+            done
+            if [ "$OK" != "true" ]; then
+              echo "::error::Usuario '${{ github.actor }}' no está en allowed_actors: $ALLOWED"
+              exit 1
+            fi
+          fi
+
+          # Pertenencia a equipos (si provistos)
+          TEAMS="${{ inputs.allowed_teams }}"
+          if [ -n "$TEAMS" ]; then
+            IFS=',' read -ra TLIST <<< "$TEAMS"
+            IN_TEAM="false"
+            for t in "${TLIST[@]}"; do
+              t_trim="$(echo "$t" | xargs)"
+              team_slug="$t_trim"
+              ORG="${{ github.repository_owner }}"
+              if echo "$t_trim" | grep -q '/'; then
+                 ORG="${t_trim%%/*}"
+                 team_slug="${t_trim##*/}"
+              fi
+              if gh api -X GET "orgs/$ORG/teams/$team_slug/memberships/${{ github.actor }}" >/dev/null 2>&1; then
+                IN_TEAM="true"; break
+              fi
+            done
+            if [ "$IN_TEAM" != "true" ]; then
+              echo "::error::Usuario '${{ github.actor }}' no pertenece a ninguno de los equipos permitidos: $TEAMS"
+              exit 1
+            fi
+          fi
+
+          echo "Políticas de branch/actor verificadas ✅"
+
+      # 3) Verifica que GA no exista
+      - name: Ensure GA does not exist yet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          git fetch --tags --quiet
           if git rev-parse -q --verify "refs/tags/$GA_VERSION" >/dev/null; then
             echo "::error::Tag GA '$GA_VERSION' ya existe"
             exit 1
           fi
-          set +e
-          gh release view "$GA_VERSION" >/dev/null 2>&1
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
+          if gh release view "$GA_VERSION" >/dev/null 2>&1; then
             echo "::error::Release GA '$GA_VERSION' ya existe"
             exit 1
           fi
-          echo "OK: GA no existe aún"
 
-      - name: Setup buildx (para imagetools)
+      # 4) Promoción de imágenes
+      - name: Setup buildx (for imagetools)
         uses: docker/setup-buildx-action@v3
 
-      # ---------- GHCR: re-etiquetar RC -> GA ----------
+      ## GHCR
       - name: Login GHCR
         if: ${{ inputs.do_ghcr }}
         uses: docker/login-action@v3
@@ -112,7 +210,7 @@ jobs:
             docker buildx imagetools create -t "$DST_LATEST" "$SRC"
           fi
 
-      # ---------- ACR: re-etiquetar RC -> GA ----------
+      ## ACR
       - name: Login ACR
         if: ${{ inputs.do_acr }}
         uses: azure/docker-login@v1
@@ -138,21 +236,23 @@ jobs:
             docker buildx imagetools create -t "$DST_LATEST" "$SRC"
           fi
 
-      # ---------- Tags/Release GA en GitHub ----------
-      - name: Create GA tag and Release
+      # 5) Crear Release GA (gh crea el tag GA automáticamente)
+      - name: Create GA Release (gh creates tag)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git tag -a "$GA_VERSION" -m "Release $GA_VERSION"
-          git push origin "$GA_VERSION"
-
           gh release create "$GA_VERSION" \
             --title "Release $GA_VERSION" \
             --latest \
             --generate-notes
 
+      - name: Outputs
+        id: out
+        run: |
+          echo "ga_version=$GA_VERSION" >> $GITHUB_OUTPUT
+
       - name: Summary
         run: |
           echo "### Promoción completada" >> $GITHUB_STEP_SUMMARY
-          echo "- RC: \`${RC_VERSION}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- GA: \`${GA_VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- RC: \`$RC_VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- GA: \`$GA_VERSION\`"   >> $GITHUB_STEP_SUMMARY
