@@ -153,14 +153,40 @@ jobs:
             fi
           fi
 
-          # Miembro de la organización (si aplica)
+          # Miembro de la organización (si aplica) — usar memberships (funciona con miembros privados)
           if [ "${{ inputs.require_org_member }}" = "true" ]; then
             ORG="${{ github.repository_owner }}"
-            if ! gh api -X GET "orgs/$ORG/members/${{ github.actor }}" >/dev/null 2>&1; then
-              echo "::error::El actor '${{ github.actor }}' no es miembro de la organización '$ORG'."
+            # Consulta la membresía (privada o pública). Esperamos state=active.
+            STATUS_JSON="$(gh api -X GET "orgs/$ORG/memberships/${{ github.actor }}" 2>/dev/null || true)"
+            if [ -z "$STATUS_JSON" ]; then
+              echo "::error::No se pudo consultar la membresía del actor '${{ github.actor }}' en la organización '$ORG'."
+              exit 1
+            fi
+            # Extrae 'state' con jq (instalado por defecto en runners de Ubuntu)
+            STATE="$(echo "$STATUS_JSON" | jq -r '.state // empty')"
+            if [ "$STATE" != "active" ]; then
+              echo "::error::El actor '${{ github.actor }}' no tiene membresía activa en '$ORG' (state='$STATE')."
               exit 1
             fi
           fi
+
+          # Alternativa/fallback: permisos en el repo (push/maintain/admin)
+          PERM_JSON="$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission 2>/dev/null || true)"
+          PERM="$(echo "$PERM_JSON" | jq -r '.permission // empty')"
+          case "$PERM" in
+            admin|maintain|push)
+              echo "Permiso en repo suficiente: $PERM -> OK"
+              ;;
+            *)
+              # Si no cumple repo-permission, y require_org_member=false, aún podemos permitir por allowed lists
+              if [ "${{ inputs.require_org_member }}" = "false" ]; then
+                echo "Permiso repo: '$PERM'. Se permitirá continuar si pasa allowed_actors/allowed_teams."
+              else
+                echo "::error::Permiso insuficiente en repo: '$PERM' (se requiere admin/maintain/push)."
+                exit 1
+              fi
+              ;;
+          esac
 
           # Lista blanca de usuarios (si provista)
           ALLOWED="${{ inputs.allowed_actors }}"
@@ -268,3 +294,26 @@ jobs:
           DST_GA="tesiscloud.azurecr.io/${IMAGE_LOWER}:${GA_VERSION}"
 
           echo "Promoviendo ACR: $SRC -> $DST_GA"
+          docker buildx imagetools create -t "$DST_GA" "$SRC"
+
+          if [ "${{ inputs.publish_latest }}" = "true" ]; then
+            DST_LATEST="tesiscloud.azurecr.io/${IMAGE_LOWER}:latest"
+            echo "Adicional: ACR -> $DST_LATEST"
+            docker buildx imagetools create -t "$DST_LATEST" "$SRC"
+          fi
+
+      # 5) Crear Release GA (gh crea el tag automáticamente)
+      - name: Create GA Release (gh creates tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GA_VERSION" \
+            --title "Release $GA_VERSION" \
+            --latest \
+            --generate-notes
+
+      - name: Summary
+        run: |
+          echo "### Promoción completada" >> $GITHUB_STEP_SUMMARY
+          echo "- RC: \`$RC_VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- GA: \`$GA_VERSION\`"   >> $GITHUB_STEP_SUMMARY
