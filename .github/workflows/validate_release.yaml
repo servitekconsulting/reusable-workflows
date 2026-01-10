@@ -1,0 +1,134 @@
+name: Validate Release version
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+
+      regex_check:
+        required: false
+        type: string
+        default: '^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$'
+
+jobs:
+  validate_release:
+    #name: Validate version ${{ inputs.version }} for ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read           # leer repo y releases (gh cli con GITHUB_TOKEN)
+      actions: read            # opcional si consultas runs (no usado aquí)
+    outputs:
+      version: ${{ steps.set_outputs.outputs.version }}
+      latest_release: ${{ steps.set_outputs.outputs.latest_release }}
+      exists: ${{ steps.set_outputs.outputs.exists }}
+    steps:
+      - name: Set Environment Name
+        run: |
+          # Normaliza nombre del environment a MAYÚSCULAS
+          ENVIRONMENT_NAME=$(echo "${{ inputs.environment }}" | tr '[:lower:]' '[:upper:]')
+          echo "ENVIRONMENT_NAME=$ENVIRONMENT_NAME" >> $GITHUB_ENV
+          echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          echo "REGEX=${{ inputs.regex_check }}" >> $GITHUB_ENV
+
+      - name: Checkout (shallow)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Release version format
+        shell: bash
+        run: |
+          echo "🔎 Validating release version: '${VERSION}' matches regex: ${REGEX}"
+          if echo "${VERSION}" | grep -Eq "${REGEX}"; then
+            echo "✅ Version format is valid."
+          else
+            echo "::error::Release version '${VERSION}' does not match regex '${REGEX}'."
+            echo "Please review the naming convention: v<MAJOR>.<MINOR>.<PATCH>[-rc.<N>]"
+            exit 1
+          fi
+
+      - name: Get latest release (if any)
+        id: latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "📦 Repository: ${{ github.repository }}"
+          # Intenta obtener el último release con gh cli
+          if gh release list --limit 1 --json tagName --jq '.[0].tagName' > .latest_release 2>/dev/null; then
+            LATEST=$(cat .latest_release)
+            echo "🔖 Latest release tag: ${LATEST}"
+            echo "latest_release=${LATEST}" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No releases found."
+            echo "latest_release=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if release tag already exists (remote tags)
+        id: check_tag
+        shell: bash
+        run: |
+          set -e
+          git fetch --tags --quiet
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "exists_tag=true" >> $GITHUB_OUTPUT
+            echo "::error::Tag '${VERSION}' already exists in repository."
+          else
+            echo "exists_tag=false" >> $GITHUB_OUTPUT
+            echo "✅ Tag '${VERSION}' does not exist."
+          fi
+
+      - name: Check if release already exists (GitHub Releases)
+        id: check_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          gh release view "${VERSION}" --json name >/dev/null 2>&1
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "exists_release=true" >> $GITHUB_OUTPUT
+            echo "::error::A GitHub Release named '${VERSION}' already exists."
+          else
+            echo "exists_release=false" >> $GITHUB_OUTPUT
+            echo "✅ No existing GitHub Release named '${VERSION}'."
+          fi
+          set -e
+
+      - name: Fail if version already exists
+        shell: bash
+        run: |
+          EXISTS_TAG="${{ steps.check_tag.outputs.exists_tag }}"
+          EXISTS_REL="${{ steps.check_release.outputs.exists_release }}"
+          if [ "$EXISTS_TAG" = "true" ] || [ "$EXISTS_REL" = "true" ]; then
+            echo "::error::Version '${VERSION}' already exists (tag=${EXISTS_TAG}, release=${EXISTS_REL}). Aborting."
+            exit 1
+          fi
+          echo "✅ Version '${VERSION}' is available."
+
+      - name: Set outputs
+        id: set_outputs
+        shell: bash
+        run: |
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "latest_release=${{ steps.latest.outputs.latest_release }}" >> $GITHUB_OUTPUT
+          EXISTS=$([ "${{ steps.check_tag.outputs.exists_tag }}" = "true" ] || [ "${{ steps.check_release.outputs.exists_release }}" = "true" ] && echo "true" || echo "false")
+          echo "exists=${EXISTS}" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### ✅ Release validation summary"
+            echo "- Environment: $ENVIRONMENT_NAME"
+            echo "- Requested version: \`${VERSION}\`"
+            echo "- Latest release: \`${{ steps.latest.outputs.latest_release || 'none' }}\`"
+            echo "- Exists (tag/release): \`${{ steps.set_outputs.outputs.exists }}\`"
+          } >> $GITHUB_STEP_SUMMARY

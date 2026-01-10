@@ -1,0 +1,89 @@
+name: Create RC Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "RC version, ej: v1.2.3-rc.2"
+        required: true
+        type: string
+      title:
+        description: "Título del release (opcional)"
+        required: false
+        type: string
+        default: ""
+      generate_notes:
+        description: "Generar notas automáticamente"
+        required: false
+        type: boolean
+        default: true
+      draft:
+        description: "Crear como Draft"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write  # crear tag/release
+
+jobs:
+  create_rc_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate RC version pattern
+        run: |
+          RC="${{ inputs.version }}"
+          if ! echo "$RC" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'; then
+            echo "::error::Version '$RC' no cumple patrón RC vX.Y.Z-rc.N"
+            exit 1
+          fi
+          echo "RC_VERSION=$RC" >> $GITHUB_ENV
+
+      - name: Ensure tag RC exists (create if missing)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          git fetch --tags
+          git rev-parse -q --verify "refs/tags/$RC_VERSION" >/dev/null
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "Creando tag $RC_VERSION"
+            git tag -a "$RC_VERSION" -m "Release candidate $RC_VERSION"
+            git push origin "$RC_VERSION"
+          else
+            echo "Tag $RC_VERSION ya existe"
+          fi
+
+      - name: Create/Update RC Release (pre-release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="${{ inputs.title }}"
+          [ -z "$TITLE" ] && TITLE="Release Candidate $RC_VERSION"
+          if gh release view "$RC_VERSION" >/dev/null 2>&1; then
+            echo "Actualizando release $RC_VERSION"
+            gh release edit "$RC_VERSION" \
+              --title "$TITLE" \
+              --prerelease \
+              $([ "${{ inputs.generate_notes }}" = "true" ] && echo "--generate-notes") \
+              $([ "${{ inputs.draft }}" = "true" ] && echo "--draft" || echo "--latest=false")
+          else
+            echo "Creando release $RC_VERSION"
+            gh release create "$RC_VERSION" \
+              --title "$TITLE" \
+              --prerelease \
+              $([ "${{ inputs.generate_notes }}" = "true" ] && echo "--generate-notes") \
+              $([ "${{ inputs.draft }}" = "true" ] && echo "--draft" || echo "--latest=false")
+          fi
+
+      - name: Summary
+        run: |
+          echo "### RC creado/actualizado" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: \`$RC_VERSION\`" >> $GITHUB_STEP_SUMMARY

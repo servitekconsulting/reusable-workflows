@@ -1,0 +1,60 @@
+name: Test java
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      java_version:
+        required: true
+        type: string
+      java_distribution:
+        required: true
+        type: string
+      test_command:
+        required: true
+        type: string
+      maven_build:
+        required: false
+        type: boolean
+        default: false
+      coverage_path:
+        required: false
+        type: string
+        default: target/site/jacoco/test
+
+jobs:
+  test_maven:
+    environment:
+      name: ${{ github.event_name != 'pull_request' && inputs.environment || ''}}
+    runs-on: ubuntu-latest
+    if: ${{ inputs.maven_build == true}}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set Environment Name
+        run: echo "ENVIRONMENT_NAME=${{ inputs.environment }}" >> $GITHUB_ENV
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: ${{ inputs.java_distribution }}
+          cache: maven
+
+      - name: Validate Maven Wrapper
+        run: mvn -v
+
+      - name: Run Tests
+        run: ${{ inputs.test_command }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Unit Test Coverage
+        if: ${{ inputs.coverage_path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit_test_coverage-${{ github.job }}
+          path: ${{ inputs.coverage_path }}

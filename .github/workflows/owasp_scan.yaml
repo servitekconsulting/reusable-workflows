@@ -1,0 +1,40 @@
+name: Owasp scan
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      owasp_target:
+        required: true
+        type: string
+      owasp_cmd_options:
+        required: false
+        type: string
+        default: '-a'
+
+jobs:
+  zap_scan:
+    environment:
+      # Asigna el environment sólo si NO es un PR
+      name: ${{ github.event_name != 'pull_request' && inputs.environment || '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write     # permite crear Issues con los hallazgos del ZAP
+
+    name: Run DAST scan on the web application
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # Suele ser mejor NO fijarlo a main,
+        # así el workflow reutilizable trabaja con el commit/branch del llamador.
+        # with:
+        #   ref: main
+      - name: ZAP Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ inputs.owasp_target }}
+          #rules_file_name: '.zap/rules.tsv'
+          cmd_options: ${{ inputs.owasp_cmd_options }}
