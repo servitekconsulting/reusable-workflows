@@ -27,12 +27,23 @@ on:
         type: boolean
         default: true
 
-      # Controles de seguridad
+      # ---- Controles de seguridad ----
       prod_branch:
-        description: "Rama desde la que se permite promover"
+        description: "Rama exacta desde la que se permite promover (ej: main). Dejar vacío si usarás patrón."
         required: false
         type: string
-        default: "master"
+        default: ""
+      prod_branch_pattern:
+        description: "Patrón de rama permitido (glob). Ej: 'release/*'"
+        required: false
+        type: string
+        default: "release/*"
+      allow_tags:
+        description: "Permitir ejecución si el ref es un tag"
+        required: false
+        type: boolean
+        default: true
+
       protected_env_name:
         description: "Ambiente protegido (para aprobación). Usualmente 'prod'"
         required: false
@@ -55,7 +66,7 @@ on:
         default: ""
 
     secrets:
-      # Requeridos solo si do_acr=true
+      # Requeridos sólo si do_acr=true
       REGISTRY_USERNAME:
         required: false
       REGISTRY_PASSWORD:
@@ -67,11 +78,10 @@ permissions:
 
 jobs:
   promote:
-    # Ambiente protegido -> requiere aprobación si configuras Required reviewers en 'prod'
     environment:
-      name: ${{ inputs.protected_env_name }}
-
+      name: ${{ inputs.protected_env_name }}   # Ej: prod (aplicará Protection rules)
     runs-on: ubuntu-latest
+
     outputs:
       ga_version: ${{ steps.compute.outputs.ga_version }}
 
@@ -93,9 +103,9 @@ jobs:
           fi
           GA="$(echo "$RC" | sed -E 's/-rc\.[0-9]+$//')"
 
-          echo "ga_version=$GA" >> $GITHUB_OUTPUT
           echo "RC_VERSION=$RC"  >> $GITHUB_ENV
           echo "GA_VERSION=$GA"  >> $GITHUB_ENV
+          echo "ga_version=$GA"  >> $GITHUB_OUTPUT
 
       # 2) Políticas: rama / organización / usuarios / equipos
       - name: Enforce branch & actor policy
@@ -105,12 +115,42 @@ jobs:
         run: |
           set -e
 
-          # Rama
-          REF_NAME="${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}"
+          REF_FULL="${GITHUB_REF}"             # ej: refs/heads/release/v0.1.0 o refs/tags/v0.1.0-rc.2
+          REF_TYPE="${GITHUB_REF##refs/}"      # heads/release/v0.1.0  o tags/v0.1.0-rc.2
+          REF_NAME="${GITHUB_REF_NAME}"        # release/v0.1.0        o v0.1.0-rc.2
+
           PROD_BRANCH="${{ inputs.prod_branch }}"
-          if [ "$REF_NAME" != "$PROD_BRANCH" ]; then
-            echo "::error::Este job solo puede ejecutarse desde la rama '$PROD_BRANCH'. (ref actual: '$REF_NAME')"
-            exit 1
+          PROD_PATTERN="${{ inputs.prod_branch_pattern }}"
+          ALLOW_TAGS="${{ inputs.allow_tags }}"
+
+          echo "Ref completo: $REF_FULL"
+          echo "Tipo: $REF_TYPE"
+          echo "Nombre: $REF_NAME"
+          echo "Reglas: prod_branch='$PROD_BRANCH', prod_branch_pattern='$PROD_PATTERN', allow_tags=$ALLOW_TAGS"
+
+          # 1) Si ref es tag y allow_tags=true -> OK
+          if [ "${REF_TYPE%%/*}" = "tags" ] && [ "$ALLOW_TAGS" = "true" ]; then
+            echo "Ref es un TAG y allow_tags=true -> OK"
+          else
+            # 2) Si hay rama exacta definida y coincide -> OK
+            if [ -n "$PROD_BRANCH" ] && [ "$REF_NAME" = "$PROD_BRANCH" ]; then
+              echo "Rama exacta '$PROD_BRANCH' permitida -> OK"
+            else
+              # 3) Si hay patrón definido y coincide -> OK
+              if [ -n "$PROD_PATTERN" ]; then
+                # Implementa glob simple: 'release/*'
+                PATTERN_PREFIX="${PROD_PATTERN%%\*}"   # parte antes del asterisco
+                if [ -n "$PATTERN_PREFIX" ] && [[ "$REF_NAME" == $PATTERN_PREFIX* ]]; then
+                  echo "Rama '$REF_NAME' coincide con patrón '$PROD_PATTERN' -> OK"
+                else
+                  echo "::error::Este job solo puede ejecutarse desde una rama que cumpla el patrón '$PROD_PATTERN' o la rama exacta '$PROD_BRANCH', o desde TAG (allow_tags=$ALLOW_TAGS). Ref actual: '$REF_NAME'"
+                  exit 1
+                fi
+              else
+                echo "::error::No se definió ni 'prod_branch' ni 'prod_branch_pattern', y el ref no es TAG permitido. Ref actual: '$REF_NAME'"
+                exit 1
+              fi
+            fi
           fi
 
           # Miembro de la organización (si aplica)
@@ -228,31 +268,3 @@ jobs:
           DST_GA="tesiscloud.azurecr.io/${IMAGE_LOWER}:${GA_VERSION}"
 
           echo "Promoviendo ACR: $SRC -> $DST_GA"
-          docker buildx imagetools create -t "$DST_GA" "$SRC"
-
-          if [ "${{ inputs.publish_latest }}" = "true" ]; then
-            DST_LATEST="tesiscloud.azurecr.io/${IMAGE_LOWER}:latest"
-            echo "Adicional: ACR -> $DST_LATEST"
-            docker buildx imagetools create -t "$DST_LATEST" "$SRC"
-          fi
-
-      # 5) Crear Release GA (gh crea el tag GA automáticamente)
-      - name: Create GA Release (gh creates tag)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "$GA_VERSION" \
-            --title "Release $GA_VERSION" \
-            --latest \
-            --generate-notes
-
-      - name: Outputs
-        id: out
-        run: |
-          echo "ga_version=$GA_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Summary
-        run: |
-          echo "### Promoción completada" >> $GITHUB_STEP_SUMMARY
-          echo "- RC: \`$RC_VERSION\`" >> $GITHUB_STEP_SUMMARY
-          echo "- GA: \`$GA_VERSION\`"   >> $GITHUB_STEP_SUMMARY
