@@ -24,13 +24,13 @@ on:
         default: false
 
 permissions:
-  contents: write  # crear tag/release
+  contents: write  # necesario para crear/editar releases y tags
 
 jobs:
   create_rc_release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (shallow is fine)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -44,46 +44,35 @@ jobs:
           fi
           echo "RC_VERSION=$RC" >> $GITHUB_ENV
 
-      - name: Ensure tag RC exists (create if missing)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set +e
-          git fetch --tags
-          git rev-parse -q --verify "refs/tags/$RC_VERSION" >/dev/null
-          rc=$?
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            echo "Creando tag $RC_VERSION"
-            git tag -a "$RC_VERSION" -m "Release candidate $RC_VERSION"
-            git push origin "$RC_VERSION"
-          else
-            echo "Tag $RC_VERSION ya existe"
-          fi
-
-      - name: Create/Update RC Release (pre-release)
+      # 👉 Opción B: crear/actualizar Release y dejar que 'gh release create' cree el TAG
+      - name: Create or update RC Release (gh creates tag if missing)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TITLE="${{ inputs.title }}"
-          [ -z "$TITLE" ] && TITLE="Release Candidate $RC_VERSION"
-          if gh release view "$RC_VERSION" >/dev/null 2>&1; then
-            echo "Actualizando release $RC_VERSION"
-            gh release edit "$RC_VERSION" \
+          [ -z "$TITLE" ] && TITLE="Release Candidate ${{ inputs.version }}"
+          RC="${{ inputs.version }}"
+
+          # Si ya existe el release, editar; si no, crearlo (gh puede crear el tag)
+          if gh release view "$RC" >/dev/null 2>&1; then
+            echo "Actualizando release $RC (tag ya existente en GitHub)"
+            gh release edit "$RC" \
               --title "$TITLE" \
               --prerelease \
               $([ "${{ inputs.generate_notes }}" = "true" ] && echo "--generate-notes") \
               $([ "${{ inputs.draft }}" = "true" ] && echo "--draft" || echo "--latest=false")
           else
-            echo "Creando release $RC_VERSION"
-            gh release create "$RC_VERSION" \
+            echo "Creando release $RC y el tag automáticamente apuntando a ${GITHUB_SHA}"
+            gh release create "$RC" \
               --title "$TITLE" \
               --prerelease \
+              --target "${GITHUB_SHA}" \
               $([ "${{ inputs.generate_notes }}" = "true" ] && echo "--generate-notes") \
               $([ "${{ inputs.draft }}" = "true" ] && echo "--draft" || echo "--latest=false")
           fi
 
       - name: Summary
         run: |
-          echo "### RC creado/actualizado" >> $GITHUB_STEP_SUMMARY
-          echo "- Tag: \`$RC_VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "### RC creado/actualizado (tag creado vía gh)" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: \`${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- SHA: \`${GITHUB_SHA}\`" >> $GITHUB_STEP_SUMMARY
