@@ -244,19 +244,3 @@ jobs:
             echo "::error::Release GA '$GA_VERSION' ya existe"
             exit 1
           fi
-
-      # 5) Crear Release GA (gh crea el tag automáticamente)
-      - name: Create GA Release (gh creates tag)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "$GA_VERSION" \
-            --title "Release $GA_VERSION" \
-            --latest \
-            --generate-notes
-
-      - name: Summary
-        run: |
-          echo "### Promoción completada" >> $GITHUB_STEP_SUMMARY
-          echo "- RC: \`$RC_VERSION\`" >> $GITHUB_STEP_SUMMARY
-          echo "- GA: \`$GA_VERSION\`"   >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,115 @@
+name: Generate Release (GA)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Ambiente protegido (usualmente 'prod')"
+        required: true
+        type: string
+      rc_version:
+        description: "Versión RC (ej: v1.2.3-rc.2)"
+        required: true
+        type: string
+      title_prefix:
+        description: "Prefijo del título del release"
+        required: false
+        type: string
+        default: "Release"
+      generate_notes:
+        description: "Generar notas automáticamente (solo al crear)"
+        required: false
+        type: boolean
+        default: true
+      mark_latest:
+        description: "Marcar el release como 'latest'"
+        required: false
+        type: boolean
+        default: true
+
+    secrets:
+      DUMMY:
+        required: false
+
+permissions:
+  contents: write   # crear/editar releases/tags (requerido)
+  packages: write   # opcional, por si adjuntas assets desde packages
+
+jobs:
+  generate:
+    environment:
+      name: ${{ inputs.environment }}   # aplica Environment protection (aprobaciones/secrets)
+    runs-on: ubuntu-latest
+
+    outputs:
+      ga_version: ${{ steps.compute.outputs.ga_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute GA from RC
+        id: compute
+        shell: bash
+        run: |
+          RC="${{ inputs.rc_version }}"
+          if ! echo "$RC" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$'; then
+            echo "::error::'$RC' no es un RC válido (esperado vX.Y.Z-rc.N)"
+            exit 1
+          fi
+          GA="$(echo "$RC" | sed -E 's/-rc\.[0-9]+$//')"
+
+          echo "RC_VERSION=$RC"  >> $GITHUB_ENV
+          echo "GA_VERSION=$GA"  >> $GITHUB_ENV
+          echo "ga_version=$GA"  >> $GITHUB_OUTPUT
+
+      - name: Ensure GA release exists or create it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          GA="$GA_VERSION"
+
+          # Refresca tags por si el promote ya creó el tag
+          git fetch --tags --quiet || true
+
+          # ¿Existe el release GA?
+          if gh release view "$GA" >/dev/null 2>&1; then
+            echo "Release '$GA' ya existe. Se actualizará (editar/adjuntar assets)..."
+            # Marca como 'latest' si corresponde
+            if [ "${{ inputs.mark_latest }}" = "true" ]; then
+              gh release edit "$GA" --latest || true
+            fi
+          else
+            echo "Release '$GA' no existe. Se creará ahora..."
+            TITLE="${{ inputs.title_prefix }} $GA"
+            CREATE_ARGS=( "$GA" --title "$TITLE" )
+            # Asociar commitish si lo pasaste
+            if [ -n "${{ inputs.commitish }}" ]; then
+              CREATE_ARGS+=( --target "${{ inputs.commitish }}" )
+            fi
+            # Generar notas si lo pediste
+            if [ "${{ inputs.generate_notes }}" = "true" ]; then
+              CREATE_ARGS+=( --generate-notes )
+            fi
+            # Marcar como latest si corresponde
+            if [ "${{ inputs.mark_latest }}" = "true" ]; then
+              CREATE_ARGS+=( --latest )
+            fi
+
+            gh release create "${CREATE_ARGS[@]}"
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Generate Release (GA)"
+            echo "- RC: \`$RC_VERSION\`"
+            echo "- GA: \`$GA_VERSION\`"
+            echo "- Latest: \`${{ inputs.mark_latest }}\`"
+            echo "- Generate notes: \`${{ inputs.generate_notes }}\`"
+          } >> $GITHUB_STEP_SUMMARY
