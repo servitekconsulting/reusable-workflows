@@ -3,10 +3,10 @@ name: Generate Release (GA)
 on:
   workflow_call:
     inputs:
-      environment:
-        description: "Ambiente protegido (usualmente 'prod')"
-        required: true
-        type: string
+      #environment:
+      #  description: "Ambiente protegido (usualmente 'prod')"
+      #  required: true
+      #  type: string
       rc_version:
         description: "Versión RC (ej: v1.2.3-rc.2)"
         required: true
@@ -37,8 +37,8 @@ permissions:
 
 jobs:
   generate:
-    environment:
-      name: ${{ inputs.environment }}   # aplica Environment protection (aprobaciones/secrets)
+    #environment:
+    #  name: ${{ inputs.environment }}   # aplica Environment protection (aprobaciones/secrets)
     runs-on: ubuntu-latest
 
     outputs:
