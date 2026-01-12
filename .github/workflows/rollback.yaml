@@ -122,7 +122,7 @@ jobs:
           NS="${{ inputs.namespace }}"
           DEPLOY="${{ inputs.deployment_name }}"
           echo "Esperando estabilidad del Deployment tras rollback..."
-          kubectl rollout status -n "$NS" deployment/${DEPLOY} --timeout=180s
+          kubectl rollout status -n "$NS" deployment/${DEPLOY} --timeout=300s
 
       - name: Resumen
         shell: bash
