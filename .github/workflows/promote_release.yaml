@@ -72,6 +72,11 @@ on:
       REGISTRY_PASSWORD:
         required: false
 
+    outputs:
+      ga_version:
+        description: "Versión GA resultante"
+        value: ${{ jobs.promote.outputs.ga_version }}
+
 permissions:
   contents: write   # crear/editar releases y tags
   packages: write   # re-etiquetar imágenes en GHCR
