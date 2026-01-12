@@ -19,8 +19,8 @@ on:
       to_revision:
         description: "Revisión K8s a la que volver (ej: 3). 0 o vacío = revisión previa"
         required: false
-        type: number
-        default: 0
+        type: string
+        default: "0"
 
       # --- Parámetros comunes ---
       namespace:
