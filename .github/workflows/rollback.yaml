@@ -1,0 +1,69 @@
+name: Rollback Deployment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Ambiente (para auditoría/aprobaciones si lo usas)"
+        required: false
+        type: string
+        default: ""
+      namespace:
+        description: "Namespace de k8s"
+        required: false
+        type: string
+        default: "default"
+      deployment_name:
+        description: "Nombre del Deployment a revertir"
+        required: true
+        type: string
+      to_revision:
+        description: "Revisión específica a la que hacer rollback (opcional)"
+        required: false
+        type: number
+        default: 0  # 0 = última revisión previa
+
+    secrets:
+      KUBE_CONFIG:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    # Si quieres que aparezca ventana de aprobación también aquí, deja el environment
+    environment: ${{ inputs.environment != '' && inputs.environment || null }}
+
+    steps:
+      - name: Write kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+        env:
+          KUBECONFIG: $HOME/.kube/config
+
+      - name: Show rollout history
+        shell: bash
+        run: |
+          NS="${{ inputs.namespace }}"
+          DEPLOY="${{ inputs.deployment_name }}"
+          kubectl rollout history -n "$NS" "deployment/${DEPLOY}"
+
+      - name: Rollback deployment
+        shell: bash
+        run: |
+          NS="${{ inputs.namespace }}"
+          DEPLOY="${{ inputs.deployment_name }}"
+          TO_REV="${{ inputs.to_revision }}"
+          if [ "$TO_REV" -gt 0 ]; then
+            echo "Haciendo rollback a la revisión $TO_REV..."
+            kubectl rollout undo -n "$NS" "deployment/${DEPLOY}" --to-revision="$TO_REV"
+          else
+            echo "Haciendo rollback a la revisión previa..."
+            kubectl rollout undo -n "$NS" "deployment/${DEPLOY}"
+          fi
+          echo "Esperando estado tras rollback..."
+          kubectl rollout status -n "$NS" "deployment/${DEPLOY}" --timeout=180s

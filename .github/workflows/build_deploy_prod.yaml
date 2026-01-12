@@ -1,0 +1,199 @@
+name: Build and Deploy PROD
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        required: false
+        type: string
+        default: .
+      image-name:
+        required: true
+        type: string
+        description: "Nombre base del repo de imagen (sin registry), ej: myapp-java"
+      environment:
+        required: true
+        type: string
+      releaseCandidateVersion:
+        required: false
+        type: string
+        description: "Tag RC (ej: v5.5.0-rc.0). Si no viene, se usa 1.0.<run_number>"
+      deployment_name:
+        required: true
+        type: string
+        description: "Nombre del Deployment a verificar/rollback (ej: myapp-java)"
+      namespace:
+        required: false
+        type: string
+        default: "default"
+
+    secrets:
+      REGISTRY_USERNAME:
+        required: true
+      REGISTRY_PASSWORD:
+        required: true
+      KUBE_CONFIG:
+        required: true
+
+# Deja aquí solo constantes si quieres
+env:
+  REGISTRY: ghcr.io
+  DEFAULT_IMAGE_TAG_PREFIX: "1.0"
+
+jobs:
+  build_deploy:
+    environment:
+      name: ${{ github.event_name != 'pull_request' && inputs.environment || '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Calcula rutas y tags y los exporta a GITHUB_ENV
+      - name: Compute image names and tags
+        id: compute
+        shell: bash
+        run: |
+          # Normaliza owner y nombre de imagen a minúsculas
+          OWNER_LOWER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE_NAME_LOWER="$(echo "${{ inputs.image-name }}" | tr '[:upper:]' '[:lower:]')"
+
+          # GHCR image path: ghcr.io/<owner>/<image-name>
+          GHCR_IMAGE_PATH="${{ env.REGISTRY }}/${OWNER_LOWER}/${IMAGE_NAME_LOWER}"
+          echo "GHCR_IMAGE_PATH=$GHCR_IMAGE_PATH" >> $GITHUB_ENV
+          echo "GHCR_IMAGE_PATH=$GHCR_IMAGE_PATH"
+
+          # Tag: usa RC si viene, si no 1.0.<run_number>
+          if [ -n "${{ inputs.releaseCandidateVersion }}" ]; then
+            IMAGE_TAG="${{ inputs.releaseCandidateVersion }}"
+          else
+            IMAGE_TAG="${{ env.DEFAULT_IMAGE_TAG_PREFIX }}.${{ github.run_number }}"
+          fi
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          echo "IMAGE_TAG=$IMAGE_TAG"
+
+          # ACR path (Azure no exige minúsculas estrictamente en el nombre del repo, pero es buena práctica)
+          ACR_REGISTRY="tesiscloud.azurecr.io"
+          ACR_IMAGE_REPO="$IMAGE_NAME_LOWER"
+          ACR_IMAGE_PATH="$ACR_REGISTRY/$ACR_IMAGE_REPO"
+          echo "ACR_IMAGE_PATH=$ACR_IMAGE_PATH" >> $GITHUB_ENV
+          echo "ACR_IMAGE_PATH=$ACR_IMAGE_PATH"
+
+      - name: Debug paths
+        shell: bash
+        run: |
+          echo "WORKDIR=${{ inputs.working-directory }}"
+          ls -la "${{ inputs.working-directory }}" || true
+          test -f "${{ inputs.working-directory }}/Dockerfile" && echo "Dockerfile OK" || (echo "::error::No se encontró Dockerfile en ${{ inputs.working-directory }}" && exit 1)
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v4.0.0
+        with:
+          cosign-release: 'v3.0.2'
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v3.11.1
+
+      # Login GHCR
+      - name: Log into GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Metadata GHCR
+      - name: Extract Docker metadata (GHCR)
+        id: meta
+        uses: docker/metadata-action@v5.7.0
+        with:
+          images: ${{ env.GHCR_IMAGE_PATH }}
+
+      # Build & Push GHCR
+      - name: Build and push Docker image to GHCR
+        id: build-and-push-ghcr
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: ${{ inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.GHCR_IMAGE_PATH }}:${{ env.IMAGE_TAG }}
+            ${{ env.GHCR_IMAGE_PATH }}:latest
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Sign GHCR image digest
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign ${{ env.GHCR_IMAGE_PATH }}@${{ steps.build-and-push-ghcr.outputs.digest }}
+
+      # Login ACR
+      - name: Docker login to ACR
+        uses: azure/docker-login@v1
+        with:
+          login-server: tesiscloud.azurecr.io
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # Build & Push ACR (respeta working-directory)
+      - name: Build and Push image to ACR
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          echo "Building ACR image $ACR_IMAGE_PATH with tags: $IMAGE_TAG, ${{ github.sha }}, latest"
+          docker build . -t $ACR_IMAGE_PATH:$IMAGE_TAG -t $ACR_IMAGE_PATH:${{ github.sha }} -t $ACR_IMAGE_PATH:latest
+          docker push $ACR_IMAGE_PATH:$IMAGE_TAG
+          docker push $ACR_IMAGE_PATH:${{ github.sha }}
+          docker push $ACR_IMAGE_PATH:latest
+
+      - name: Write kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+        env:
+          KUBECONFIG: $HOME/.kube/config
+
+      - name: Deploy to AKS (stg/prod según input)
+        uses: Azure/k8s-deploy@v1
+        with:
+          namespace: default
+          manifests: |
+            k8s/deployment.yml
+            k8s/service.yml
+          images: tesiscloud.azurecr.io/${{ inputs.image-name }}:${{ env.IMAGE_TAG }}
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          action: deploy
+
+
+      # Verifica el rollout del Deployment y hace rollback si falla
+      - name: Verify rollout and rollback on failure
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: bash
+        env:
+          KUBECONFIG: $HOME/.kube/config
+        run: |
+          set -e
+          DEPLOY="${{ inputs.deployment_name }}"
+          NS="${{ inputs.namespace }}"
+          echo "Verificando rollout de deployment/$DEPLOY en namespace '$NS'..."
+
+          # Espera al éxito del rollout (ajusta el timeout a tus necesidades)
+          if ! kubectl rollout status -n "$NS" "deployment/${DEPLOY}" --timeout=180s; then
+            echo "❌ Rollout falló, iniciando rollback a la revisión anterior..."
+            kubectl rollout undo -n "$NS" "deployment/${DEPLOY}"
+            echo "⏳ Esperando a que el rollback complete..."
+            kubectl rollout status -n "$NS" "deployment/${DEPLOY}" --timeout=180s
+            echo "::error::Se ejecutó rollback automático por fallo en el despliegue."
+            exit 1
+          fi
+
+          echo "✅ Rollout OK: deployment/${DEPLOY}"
