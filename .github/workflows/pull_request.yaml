@@ -1,0 +1,265 @@
+name: Pull request Checks (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        description: "Versión de Java"
+        required: false
+        default: "17"
+        type: string
+      maven_goals:
+        description: "Metas Maven para el build"
+        required: false
+        default: "clean test package"
+        type: string
+      enable_cache:
+        description: "Cache de dependencias Maven"
+        required: false
+        default: true
+        type: boolean
+
+      # --- SonarCloud / Quality Gate ---
+      sonar_enabled:
+        description: "Habilitar análisis SonarCloud en PR con fail-fast por Quality Gate"
+        required: false
+        default: true
+        type: boolean
+      sonar_project_key:
+        description: "Clave de proyecto en SonarCloud"
+        required: false
+        default: ""
+        type: string
+      sonar_organization:
+        description: "Organización en SonarCloud"
+        required: false
+        default: ""
+        type: string
+      sonar_host_url:
+        description: "URL (SonarCloud)"
+        required: false
+        default: "https://sonarcloud.io"
+        type: string
+
+      # --- Snyk SCA ---
+      snyk_enabled:
+        description: "Habilitar Snyk Open Source (SCA)"
+        required: false
+        default: true
+        type: boolean
+      snyk_continue_on_error:
+        description: "Continuar si Snyk encuentra vulnerabilidades"
+        required: false
+        default: true
+        type: boolean
+      snyk_args:
+        description: "Args extra de Snyk (p.ej. --severity-threshold=high)"
+        required: false
+        default: "--file=pom.xml"
+        type: string
+
+      # --- OWASP SCAN ---
+      owasp_enabled:
+        description: "Ejecutar ZAP OWASP reusable"
+        required: false
+        default: true
+        type: boolean
+      owasp_environment:
+        description: "Environment para el job ZAP (solo no-PR)"
+        required: false
+        default: ""
+        type: string
+      owasp_target:
+        description: "URL objetivo para ZAP (obligatoria si owasp_enabled)"
+        required: false
+        default: ""
+        type: string
+      owasp_cmd_options:
+        description: "Opciones CLI de ZAP"
+        required: false
+        default: "-a"
+        type: string
+
+      # --- Revisión con IA opcional ---
+      review_enabled:
+        description: "Habilitar job de revisión con ChatGPT"
+        required: false
+        default: false
+        type: boolean
+      review_label:
+        description: "Etiqueta que activa la revisión IA"
+        required: false
+        default: "chatgpt-review"
+        type: string
+      review_patterns:
+        description: "Patrones de archivos a revisar"
+        required: false
+        default: "*.java,pom.xml"
+        type: string
+      review_script_path:
+        description: "Ruta del script de revisión"
+        required: false
+        default: ".github/scripts/review_inline.py"
+        type: string
+
+    secrets:
+      GITHUB_TOKEN:
+        required: false
+        description: "Token de GitHub (normalmente auto-inyectado)"
+      OPENAI_API_KEY:
+        required: false
+        description: "API Key OpenAI para revisión IA"
+      SONAR_TOKEN:
+        required: false
+        description: "Token de SonarCloud para análisis"
+      SNYK_TOKEN:
+        required: false
+        description: "Token de Snyk"
+
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build_feature:
+    name: Build & Test (Maven)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0  # Recomendado para PR y blame correcto
+
+      - name: Setup Java ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v5.0.1
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Build with Maven
+        run: |
+          echo "Running: mvn ${{ inputs.maven_goals }}"
+          mvn ${{ inputs.maven_goals }}
+
+  sonar_pr:
+    name: SonarCloud PR Analysis (fail-fast Quality Gate)
+    if: ${{ inputs.sonar_enabled }}
+    needs: build_feature
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Java ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+          cache: ${{ inputs.enable_cache && 'maven' || '' }}
+
+      - name: Cache Sonar packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: |
+            ${{ runner.os }}-sonar
+
+      - name: Maven Verify + Sonar (wait for Quality Gate)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        #run:  mvn -B verify sonar:sonar -Dsonar.projectKey=developer1-servitekconsulting_api-tesis-prueba -Dsonar.organization=developer1-servitekconsulting -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=$SONAR_TOKEN
+        run: |
+          # NOTA: GitHub Actions autodetecta parámetros de PR; se dejan explícitos por claridad.
+          mvn -B verify sonar:sonar \
+            -Dsonar.projectKey="${{ inputs.sonar_project_key }}" \
+            -Dsonar.organization="${{ inputs.sonar_organization }}" \
+            -Dsonar.host.url="${{ inputs.sonar_host_url }}" \
+            -Dsonar.token=$SONAR_TOKEN
+        #    -Dsonar.pullrequest.key="${{ github.event.pull_request.number }}" \
+        #    -Dsonar.pullrequest.branch="${{ github.head_ref }}" \
+        #    -Dsonar.pullrequest.base="${{ github.base_ref }}" \
+        #    -Dsonar.qualitygate.wait=true \
+        #    -Dsonar.qualitygate.timeout=${{ inputs.sonar_wait_timeout }} \
+        #    ${{ inputs.sonar_additional_args }}
+
+
+  security:
+      name: SCA (Snyk Open Source)
+      if: ${{ inputs.snyk_enabled }}
+      needs: sonar_pr
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+
+        - name: Make mvnw executable
+          run: chmod +x mvnw
+
+        - name: Maven dependency tree (dot) pre-check using mvnw
+          run: ./mvnw -B dependency:tree -DoutputType=dot
+
+        - name: Run Snyk to check for vulnerabilities (Maven 3 + JDK 17)
+          uses: snyk/actions/maven-3-jdk-17@master
+          continue-on-error: ${{ inputs.snyk_continue_on_error }}
+          env:
+            SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          with:
+            command: test
+            args: ${{ inputs.snyk_args }}
+
+  owasp_zap:
+    name: OWASP ZAP (Reusable)
+    if: ${{ inputs.owasp_enabled && inputs.owasp_target != '' }}
+    needs: security
+    uses: servitekconsulting/reusable-workflows/.github/workflows/owasp_scan.yaml@main
+    with:
+      # IMPORTANTE: pasamos un flag para que el workflow llamado sepa si proviene de un PR
+      environment: ${{ inputs.owasp_environment }}
+      owasp_target: ${{ inputs.owasp_target }}
+      owasp_cmd_options: ${{ inputs.owasp_cmd_options }}
+    secrets: inherit  # si tu ZAP no usa secretos, puedes omitir esto
+
+  chatgpt_review_ia:
+    name: ChatGPT Review
+    if: ${{ inputs.review_enabled && contains(github.event.pull_request.labels.*.name, inputs.review_label) }}
+    needs: owasp_zap
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install "openai>=1.0.0"
+
+      - name: Run ChatGPT Review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          REVIEW_FILE_PATTERNS: ${{ inputs.review_patterns }}
+        run: |
+          python "${{ inputs.review_script_path }}"
