@@ -1,27 +1,44 @@
-name: Rollback Deployment
+name: Rollback release
 
 on:
   workflow_call:
     inputs:
-      environment:
-        description: "Ambiente (para auditoría/aprobaciones si lo usas)"
+      rollback_mode:
+        description: "Modo de rollback: 'ga_tag' o 'revision'"
+        required: true
+        type: string
+        default: "ga_tag"
+
+      # --- Modo GA tag ---
+      ga_version:
+        description: "Versión GA (ej: v1.2.3). Obligatorio si rollback_mode=ga_tag"
         required: false
         type: string
-        default: ""
+
+      # --- Modo revisión ---
+      to_revision:
+        description: "Revisión K8s a la que volver (ej: 3). 0 o vacío = revisión previa"
+        required: false
+        type: number
+        default: 0
+
+      # --- Parámetros comunes ---
       namespace:
-        description: "Namespace de k8s"
+        description: "Namespace de Kubernetes"
         required: false
         type: string
         default: "default"
+
       deployment_name:
-        description: "Nombre del Deployment a revertir"
+        description: "Nombre del Deployment (ej: myapp-java)"
         required: true
         type: string
-      to_revision:
-        description: "Revisión específica a la que hacer rollback (opcional)"
+
+      environment:
+        description: "Environment para approvals/auditoría (vacío para omitir). Suele ser 'prod'"
         required: false
-        type: number
-        default: 0  # 0 = última revisión previa
+        type: string
+        default: "prod"
 
     secrets:
       KUBE_CONFIG:
@@ -33,11 +50,14 @@ permissions:
 jobs:
   rollback:
     runs-on: ubuntu-latest
-    # Si quieres que aparezca ventana de aprobación también aquí, deja el environment
     environment: ${{ inputs.environment != '' && inputs.environment || null }}
 
     steps:
-      - name: Write kubeconfig
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar kubeconfig
+        shell: bash
         run: |
           mkdir -p $HOME/.kube
           echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
@@ -45,25 +65,78 @@ jobs:
         env:
           KUBECONFIG: $HOME/.kube/config
 
-      - name: Show rollout history
+      - name: Información previa (historial e imagen actual)
         shell: bash
         run: |
+          set -e
           NS="${{ inputs.namespace }}"
           DEPLOY="${{ inputs.deployment_name }}"
-          kubectl rollout history -n "$NS" "deployment/${DEPLOY}"
+          echo "Deployment: $DEPLOY | Namespace: $NS"
+          echo "== Historial de rollout =="
+          kubectl rollout history -n "$NS" "deployment/${DEPLOY}" || true
+          echo "== Imagen actual de contenedor '${DEPLOY}' =="
+          kubectl get deploy -n "$NS" "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[?(@.name=="'${DEPLOY}'")].image}'; echo
 
-      - name: Rollback deployment
+      - name: Ejecutar rollback según modo
+        shell: bash
+        run: |
+          set -e
+          NS="${{ inputs.namespace }}"
+          DEPLOY="${{ inputs.deployment_name }}"
+          MODE="${{ inputs.rollback_mode }}"
+
+          echo "Modo de rollback: '$MODE'"
+          case "$MODE" in
+            ga_tag)
+              GA="${{ inputs.ga_version }}"
+              if [ -z "$GA" ]; then
+                echo "::error::ga_version es obligatorio cuando rollback_mode='ga_tag'"
+                exit 1
+              fi
+              echo "Rollback por tag GA → $GA"
+              # Forzar imagen a GA en ACR (ajusta si tu repo de imagen es distinto)
+              kubectl set image -n "$NS" deployment/${DEPLOY} ${DEPLOY}=tesiscloud.azurecr.io/${DEPLOY}:$GA
+              ;;
+
+            revision)
+              REV="${{ inputs.to_revision }}"
+              if [ -z "$REV" ] || [ "$REV" -eq 0 ]; then
+                echo "Rollback a la revisión previa (to_revision=0)..."
+                kubectl rollout undo -n "$NS" deployment/${DEPLOY}
+              else
+                echo "Rollback a la revisión específica → $REV"
+                kubectl rollout undo -n "$NS" deployment/${DEPLOY} --to-revision="$REV"
+              fi
+              ;;
+
+            *)
+              echo "::error::rollback_mode debe ser 'ga_tag' o 'revision'"
+              exit 1
+              ;;
+          esac
+
+      - name: Verificar estado tras rollback
+        shell: bash
+        run: |
+          set -e
+          NS="${{ inputs.namespace }}"
+          DEPLOY="${{ inputs.deployment_name }}"
+          echo "Esperando estabilidad del Deployment tras rollback..."
+          kubectl rollout status -n "$NS" deployment/${DEPLOY} --timeout=180s
+
+      - name: Resumen
         shell: bash
         run: |
           NS="${{ inputs.namespace }}"
           DEPLOY="${{ inputs.deployment_name }}"
-          TO_REV="${{ inputs.to_revision }}"
-          if [ "$TO_REV" -gt 0 ]; then
-            echo "Haciendo rollback a la revisión $TO_REV..."
-            kubectl rollout undo -n "$NS" "deployment/${DEPLOY}" --to-revision="$TO_REV"
-          else
-            echo "Haciendo rollback a la revisión previa..."
-            kubectl rollout undo -n "$NS" "deployment/${DEPLOY}"
-          fi
-          echo "Esperando estado tras rollback..."
-          kubectl rollout status -n "$NS" "deployment/${DEPLOY}" --timeout=180s
+          MODE="${{ inputs.rollback_mode }}"
+          GA="${{ inputs.ga_version }}"
+          REV="${{ inputs.to_revision }}"
+          {
+            echo "### Rollback completado"
+            echo "- Deployment: \`$DEPLOY\`"
+            echo "- Namespace: \`$NS\`"
+            echo "- Modo: \`$MODE\`"
+            [ -n "$GA" ] && echo "- GA destino: \`$GA\`"
+            [ -n "$REV" ] && echo "- Revisión: \`$REV\`"
+          } >> $GITHUB_STEP_SUMMARY
