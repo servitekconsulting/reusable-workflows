@@ -1,0 +1,317 @@
+
+name: Pull request Checks (NodeJS Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # --- Node & NPM/Yarn/PNPM ---
+      node_version:
+        description: "Versión de Node.js"
+        required: false
+        default: "18"
+        type: string
+      package_manager:
+        description: "Gestor de paquetes (npm, yarn, pnpm)"
+        required: false
+        default: "npm"
+        type: string
+      working_directory:
+        description: "Directorio donde ejecutar build/test"
+        required: false
+        default: "."
+        type: string
+      run_build:
+        description: "Ejecutar el script de build"
+        required: false
+        default: true
+        type: boolean
+      build_script:
+        description: "Nombre del script de build (npm run <script>)"
+        required: false
+        default: "build"
+        type: string
+      test_script:
+        description: "Script de test (npm run <script>)"
+        required: false
+        default: "test -- --coverage"
+        type: string
+      enable_cache:
+        description: "Cache de dependencias"
+        required: false
+        default: true
+        type: boolean
+
+      # --- SonarCloud / Quality Gate ---
+      sonar_enabled:
+        description: "Habilitar análisis SonarCloud en PR"
+        required: false
+        default: true
+        type: boolean
+      sonar_project_key:
+        description: "Clave de proyecto en SonarCloud"
+        required: false
+        default: ""
+        type: string
+      sonar_organization:
+        description: "Organización en SonarCloud"
+        required: false
+        default: ""
+        type: string
+      sonar_host_url:
+        description: "URL (SonarCloud)"
+        required: false
+        default: "https://sonarcloud.io"
+        type: string
+      sonar_additional_args:
+        description: "Argumentos extra para sonar-scanner"
+        required: false
+        default: "-Dsonar.javascript.lcov.reportPaths=coverage/lcov.info"
+        type: string
+
+      # --- Snyk SCA ---
+      snyk_enabled:
+        description: "Habilitar Snyk Open Source (SCA)"
+        required: false
+        default: true
+        type: boolean
+      snyk_continue_on_error:
+        description: "Continuar si Snyk encuentra vulnerabilidades"
+        required: false
+        default: true
+        type: boolean
+      snyk_args:
+        description: "Args extra de Snyk (p.ej. --severity-threshold=high)"
+        required: false
+        default: "--file=package.json"
+        type: string
+
+      # --- OWASP SCAN ---
+      owasp_enabled:
+        description: "Ejecutar ZAP OWASP reusable"
+        required: false
+        default: true
+        type: boolean
+      owasp_environment:
+        description: "Environment para el job ZAP (solo no-PR)"
+        required: false
+        default: ""
+        type: string
+      owasp_target:
+        description: "URL objetivo para ZAP (obligatoria si owasp_enabled)"
+        required: false
+        default: ""
+        type: string
+      owasp_cmd_options:
+        description: "Opciones CLI de ZAP"
+        required: false
+        default: "-a"
+        type: string
+
+      # --- Revisión con IA opcional ---
+      review_enabled:
+        description: "Habilitar job de revisión con ChatGPT"
+        required: false
+        default: false
+        type: boolean
+      review_label:
+        description: "Etiqueta que activa la revisión IA"
+        required: false
+        default: "chatgpt-review"
+        type: string
+      review_patterns:
+        description: "Patrones de archivos a revisar"
+        required: false
+        default: "*.js,*.ts,package.json"
+        type: string
+      review_script_path:
+        description: "Ruta del script de revisión"
+        required: false
+        default: ".github/scripts/review_inline.py"
+        type: string
+
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+        description: "API Key OpenAI para revisión IA"
+      SONAR_TOKEN:
+        required: false
+        description: "Token de SonarCloud para análisis"
+      SNYK_TOKEN:
+        required: false
+        description: "Token de Snyk"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write     # permite crear Issues con hallazgos del ZAP
+
+jobs:
+  build_test:
+    name: Build & Test (NodeJS)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Node ${{ inputs.node_version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.enable_cache && inputs.package_manager || '' }}
+          cache-dependency-path: |
+            ${{ inputs.working_directory }}/package-lock.json
+            ${{ inputs.working_directory }}/pnpm-lock.yaml
+            ${{ inputs.working_directory }}/yarn.lock
+
+      - name: Install dependencies (incluye dev para tests)
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          if [ "${{ inputs.package_manager }}" = "npm" ]; then
+            npm ci || npm install
+          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          else
+            npm i -g pnpm
+            pnpm i --frozen-lockfile
+          fi
+
+      - name: Run tests (con cobertura)
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          if [ "${{ inputs.package_manager }}" = "npm" ]; then
+            npm run ${{ inputs.test_script }}
+          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn ${{ inputs.test_script }}
+          else
+            pnpm ${{ inputs.test_script }}
+          fi
+
+      - name: Build
+        if: ${{ inputs.run_build }}
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          if [ "${{ inputs.package_manager }}" = "npm" ]; then
+            npm run ${{ inputs.build_script }}
+          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn ${{ inputs.build_script }}
+          else
+            pnpm ${{ inputs.build_script }}
+          fi
+
+  sonar_pr:
+    name: SonarCloud PR Analysis (Quality Gate)
+    if: ${{ inputs.sonar_enabled }}
+    needs: build_test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Node ${{ inputs.node_version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Cache Sonar packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: |
+            ${{ runner.os }}-sonar
+
+      # Usa el action oficial de SonarCloud para JS/TS (sonar-scanner)
+      - name: SonarCloud Scan (wait for Quality Gate)
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ github.token }}        # Auto PR decoration
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ inputs.working_directory }}
+          args: >
+            -Dsonar.projectKey=${{ inputs.sonar_project_key }}
+            -Dsonar.organization=${{ inputs.sonar_organization }}
+            -Dsonar.host.url=${{ inputs.sonar_host_url }}
+            ${{ inputs.sonar_additional_args }}
+
+  security:
+    name: SCA (Snyk Open Source)
+    if: ${{ inputs.snyk_enabled }}
+    needs: sonar_pr
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ inputs.node_version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install dependencies (para escaneo Snyk)
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          if [ "${{ inputs.package_manager }}" = "npm" ]; then
+            npm ci || npm install
+          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          else
+            npm i -g pnpm
+            pnpm i --frozen-lockfile
+          fi
+
+      - name: Run Snyk to check for vulnerabilities (Node)
+        uses: snyk/actions/node@master
+        continue-on-error: ${{ inputs.snyk_continue_on_error }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: ${{ inputs.snyk_args }}
+
+  owasp_zap:
+    name: OWASP ZAP (Reusable)
+    if: ${{ inputs.owasp_enabled && inputs.owasp_target != '' }}
+    needs: security
+    uses: servitekconsulting/reusable-workflows/.github/workflows/owasp_scan.yaml@main
+    with:
+      environment: ${{ inputs.owasp_environment }}
+      owasp_target: ${{ inputs.owasp_target }}
+      owasp_cmd_options: ${{ inputs.owasp_cmd_options }}
+    secrets: inherit
+
+  chatgpt_review_ia:
+    name: ChatGPT Review
+    if: ${{ inputs.review_enabled && contains(github.event.pull_request.labels.*.name, inputs.review_label) }}
+    needs: owasp_zap
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install "openai>=1.0.0"
+
+      - name: Run ChatGPT Review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          REVIEW_FILE_PATTERNS: ${{ inputs.review_patterns }}
+        run: |
+          python "${{ inputs.review_script_path }}"
