@@ -113,10 +113,10 @@ on:
         required: false
         description: "Token de Snyk"
 
-
 permissions:
   contents: read
   pull-requests: write
+  issues: write     # permite crear Issues con los hallazgos del ZAP
 
 jobs:
   build_feature:
