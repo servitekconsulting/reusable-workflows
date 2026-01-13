@@ -95,7 +95,7 @@ jobs:
               fi
               echo "Rollback por tag GA → $GA"
               # Forzar imagen a GA en ACR (ajusta si tu repo de imagen es distinto)
-              kubectl set image -n "$NS" deployment/${DEPLOY} ${DEPLOY}=tesiscloud.azurecr.io/${DEPLOY}:$GA
+              kubectl set image -n "$NS" deployment/${DEPLOY} ${DEPLOY}=servitekcloud.azurecr.io/${DEPLOY}:$GA
               ;;
 
             revision)

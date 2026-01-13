@@ -185,20 +185,20 @@ def recommend_rules(log_text: str) -> str:
               - name: Docker login to ACR
                 uses: azure/docker-login@v1
                 with:
-                  login-server: tesiscloud.azurecr.io
+                  login-server: servitekcloud.azurecr.io
                   username: ${{ secrets.REGISTRY_USERNAME }}
                   password: ${{ secrets.REGISTRY_PASSWORD }}
               ```
             - Construye y empuja tags consistentes:
               ```bash
-              IMAGE=tesiscloud.azurecr.io/myapp-java
+              IMAGE=servitekcloud.azurecr.io/myapp-java
               docker build . -t $IMAGE:${{ github.sha }} -t $IMAGE:latest
               docker push $IMAGE:${{ github.sha }}
               docker push $IMAGE:latest
               ```
             - Asegura que el manifiesto K8s use el mismo tag:
               ```yaml
-              images: "tesiscloud.azurecr.io/myapp-java:${{ github.sha }}"
+              images: "servitekcloud.azurecr.io/myapp-java:${{ github.sha }}"
               ```
             """))
 
@@ -267,12 +267,12 @@ def recommend_rules(log_text: str) -> str:
             textwrap.dedent("""
             - Alinea los tags construidos y referenciados en despliegue:
               ```bash
-              IMAGE=tesiscloud.azurecr.io/myapp-java
+              IMAGE=servitekcloud.azurecr.io/myapp-java
               docker build . -t $IMAGE:${{ github.sha }}
               docker push  $IMAGE:${{ github.sha }}
               ```
               ```yaml
-              images: "tesiscloud.azurecr.io/myapp-java:${{ github.sha }}"
+              images: "servitekcloud.azurecr.io/myapp-java:${{ github.sha }}"
               ```
             """))
 

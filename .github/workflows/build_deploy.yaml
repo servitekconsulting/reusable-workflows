@@ -70,7 +70,7 @@ jobs:
           echo "IMAGE_TAG=$IMAGE_TAG"
 
           # ACR path (Azure no exige minúsculas estrictamente en el nombre del repo, pero es buena práctica)
-          ACR_REGISTRY="tesiscloud.azurecr.io"
+          ACR_REGISTRY="servitekcloud.azurecr.io"
           ACR_IMAGE_REPO="$IMAGE_NAME_LOWER"
           ACR_IMAGE_PATH="$ACR_REGISTRY/$ACR_IMAGE_REPO"
           echo "ACR_IMAGE_PATH=$ACR_IMAGE_PATH" >> $GITHUB_ENV
@@ -132,7 +132,7 @@ jobs:
       - name: Docker login to ACR
         uses: azure/docker-login@v1
         with:
-          login-server: tesiscloud.azurecr.io
+          login-server: servitekcloud.azurecr.io
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
@@ -161,6 +161,6 @@ jobs:
           manifests: |
             k8s/deployment.yml
             k8s/service.yml
-          images: tesiscloud.azurecr.io/${{ inputs.image-name }}:${{ env.IMAGE_TAG }}
+          images: servitekcloud.azurecr.io/${{ inputs.image-name }}:${{ env.IMAGE_TAG }}
           kubeconfig: ${{ secrets.KUBE_CONFIG }}
           action: deploy
