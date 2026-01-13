@@ -58,3 +58,4 @@ jobs:
           else
             npm i -g pnpm
             pnpm i --prod --frozen-lockfile
+          fi
