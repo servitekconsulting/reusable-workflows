@@ -38,7 +38,7 @@ jobs:
       - name: Set Environment Name
         run: echo "ENVIRONMENT_NAME=${{ inputs.environment }}" >> $GITHUB_ENV
 
-      - name: Setup Node.js
+      - name: Setup Node js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
@@ -48,7 +48,7 @@ jobs:
             ${{ inputs.working-directory }}/pnpm-lock.yaml
             ${{ inputs.working-directory }}/yarn.lock
 
-      - name: Install dependencies (production)
+      - name: Install dependencies
         working-directory: ${{ inputs.working-directory }}
         run: |
           if [ "${{ inputs.package-manager }}" = "npm" ]; then
@@ -58,3 +58,4 @@ jobs:
           else
             npm i -g pnpm
             pnpm i --prod --frozen-lockfile
+          fi
