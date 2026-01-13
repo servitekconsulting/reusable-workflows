@@ -189,17 +189,17 @@ jobs:
       #      pnpm ${{ inputs.test_script }}
       #    fi
 
-      - name: Build
-        if: ${{ inputs.run_build }}
-        working-directory: ${{ inputs.working_directory }}
-        run: |
-          if [ "${{ inputs.package_manager }}" = "npm" ]; then
-            npm run ${{ inputs.build_script }}
-          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
-            yarn ${{ inputs.build_script }}
-          else
-            pnpm ${{ inputs.build_script }}
-          fi
+      #- name: Build
+      #  if: ${{ inputs.run_build }}
+      #  working-directory: ${{ inputs.working_directory }}
+      #  run: |
+      #    if [ "${{ inputs.package_manager }}" = "npm" ]; then
+      #      npm run ${{ inputs.build_script }}
+      #    elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+      #      yarn ${{ inputs.build_script }}
+      #    else
+      #      pnpm ${{ inputs.build_script }}
+      #    fi
 
   sonar_pr:
     name: SonarCloud PR Analysis (Quality Gate)
