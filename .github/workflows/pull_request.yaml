@@ -103,9 +103,6 @@ on:
         type: string
 
     secrets:
-      GITHUB_TOKEN:
-        required: false
-        description: "Token de GitHub (normalmente auto-inyectado)"
       OPENAI_API_KEY:
         required: false
         description: "API Key OpenAI para revisión IA"
@@ -180,7 +177,7 @@ jobs:
 
       - name: Maven Verify + Sonar (wait for Quality Gate)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         #run:  mvn -B verify sonar:sonar -Dsonar.projectKey=developer1-servitekconsulting_api-tesis-prueba -Dsonar.organization=developer1-servitekconsulting -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=$SONAR_TOKEN
         run: |
@@ -255,7 +252,8 @@ jobs:
       - name: Run ChatGPT Review
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          #GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_BASE_REF: ${{ github.base_ref }}
