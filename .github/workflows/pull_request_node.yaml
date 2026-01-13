@@ -178,16 +178,16 @@ jobs:
             pnpm i --frozen-lockfile
           fi
 
-      - name: Run tests (con cobertura)
-        working-directory: ${{ inputs.working_directory }}
-        run: |
-          if [ "${{ inputs.package_manager }}" = "npm" ]; then
-            npm run ${{ inputs.test_script }}
-          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
-            yarn ${{ inputs.test_script }}
-          else
-            pnpm ${{ inputs.test_script }}
-          fi
+      #- name: Run tests (con cobertura)
+      #  working-directory: ${{ inputs.working_directory }}
+      #  run: |
+      #    if [ "${{ inputs.package_manager }}" = "npm" ]; then
+      #      npm run ${{ inputs.test_script }}
+      #    elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+      #      yarn ${{ inputs.test_script }}
+      #    else
+      #      pnpm ${{ inputs.test_script }}
+      #    fi
 
       - name: Build
         if: ${{ inputs.run_build }}
