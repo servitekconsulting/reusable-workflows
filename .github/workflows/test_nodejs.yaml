@@ -1,0 +1,60 @@
+
+name: Node Js Smoke Test
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      node-version:
+        description: "Versión de Node.js"
+        required: true
+        type: string
+      package-manager:
+        description: "Gestor de paquetes (npm, yarn, pnpm)"
+        required: true
+        type: string
+      working-directory:
+        description: "Directorio donde ejecutar el build"
+        required: false
+        default: "."
+        type: string
+      nodejs_build:
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  test_nodeJs:
+    environment:
+      name: ${{ github.event_name != 'pull_request' && inputs.environment || ''}}
+    runs-on: ubuntu-latest
+    if: ${{ inputs.nodejs_build == true}}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set Environment Name
+        run: echo "ENVIRONMENT_NAME=${{ inputs.environment }}" >> $GITHUB_ENV
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: |
+            ${{ inputs.working-directory }}/package-lock.json
+            ${{ inputs.working-directory }}/pnpm-lock.yaml
+            ${{ inputs.working-directory }}/yarn.lock
+
+      - name: Install dependencies (production)
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          if [ "${{ inputs.package-manager }}" = "npm" ]; then
+            npm ci --omit=dev || npm install --production
+          elif [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile --production=true
+          else
+            npm i -g pnpm
+            pnpm i --prod --frozen-lockfile
