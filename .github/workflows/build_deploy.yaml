@@ -161,6 +161,7 @@ jobs:
           manifests: |
             k8s/deployment.yml
             k8s/service.yml
+            k8s/hpa.yml
           images: servitekcloud.azurecr.io/${{ inputs.image-name }}:${{ env.IMAGE_TAG }}
           kubeconfig: ${{ secrets.KUBE_CONFIG }}
           action: deploy
