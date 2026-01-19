@@ -153,13 +153,6 @@ jobs:
           chmod 600 $HOME/.kube/config
         env:
           KUBECONFIG: $HOME/.kube/config
-      
-      - name: Set kube context (AKS)
-        uses: azure/k8s-set-context@v4
-        with:
-          method: kubeconfig
-          kubeconfig: ${{ secrets.KUBE_CONFIG }}
-
 
       - name: Deploy to AKS (stg/prod según input)
         uses: Azure/k8s-deploy@v1
