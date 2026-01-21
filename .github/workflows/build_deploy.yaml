@@ -133,8 +133,8 @@ jobs:
         uses: azure/docker-login@v1
         with:
           login-server: servitekcloud.azurecr.io
-          username: ${{ secrets.REGISTRY_USERNAMES }}
-          password: ${{ secrets.REGISTRY_PASSWORDS }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
 
       # Build & Push ACR (respeta working-directory)
       - name: Build and Push image to ACR
