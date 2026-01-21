@@ -133,8 +133,8 @@ jobs:
         uses: azure/docker-login@v1
         with:
           login-server: servitekcloud.azurecr.io
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          username: ${{ secrets.REGISTRY_USERNAMES }}
+          password: ${{ secrets.REGISTRY_PASSWORDS }}
 
       # Build & Push ACR (respeta working-directory)
       - name: Build and Push image to ACR
@@ -159,7 +159,7 @@ jobs:
         with:
           namespace: default
           manifests: |
-            k8s/deployments.yml
+            k8s/deployment.yml
             k8s/service.yml
             k8s/hpa.yml
           images: servitekcloud.azurecr.io/${{ inputs.image-name }}:${{ env.IMAGE_TAG }}
